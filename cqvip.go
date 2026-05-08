@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -16,8 +17,6 @@ const (
 // CQVIPOptions captures the optional filters supported by the advanced
 // search endpoint. Zero values mean "do not constrain".
 type CQVIPOptions struct {
-	YearStart   int    // e.g. 2021
-	YearEnd     int    // e.g. 2025
 	OnlyPDF     bool   // restrict to records with PDF
 	OnlyOA      bool   // restrict to open-access records
 	Language    string // "zh" / "en"
@@ -76,13 +75,18 @@ type cqvipJournal struct {
 
 // SearchCQVIP runs an advanced search against the CQVIP (维普) academic API.
 // An API key is REQUIRED — the endpoint always returns 401 without one.
-func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts CQVIPOptions) ([]Paper, error) {
+func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts CQVIPOptions) ([]Paper, int, error) {
 	if cfg.CQVIPAPIKey == "" {
-		return nil, errors.New("CQVIP_API_KEY is not set")
+		return nil, 0, errors.New("CQVIP_API_KEY is not set")
 	}
 	if limit <= 0 {
 		limit = 10
 	}
+	if limit > 10 {
+		limit = 10
+	}
+
+	yearFrom := time.Now().Year() - 5
 
 	field := opts.SearchField
 	if field == "" {
@@ -94,8 +98,8 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts 
 		Size:        limit,
 		SearchField: field,
 		Content:     query,
-		YearStart:   opts.YearStart,
-		YearEnd:     opts.YearEnd,
+		YearStart:   yearFrom,
+		YearEnd:     time.Now().Year(),
 		PDF:         opts.OnlyPDF,
 		IsOa:        opts.OnlyOA,
 		Language:    opts.Language,
@@ -107,19 +111,19 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts 
 
 	raw, err := httpPostJSON(ctx, cqvipAdvSearchURL, body, headers)
 	if err != nil {
-		return nil, fmt.Errorf("cqvip search: %w", err)
+		return nil, 0, fmt.Errorf("cqvip search: %w", err)
 	}
 
 	var resp cqvipResp
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("cqvip decode: %w", err)
+		return nil, 0, fmt.Errorf("cqvip decode: %w", err)
 	}
 	if resp.Code != 200 {
 		msg := resp.Message
 		if msg == "" {
 			msg = fmt.Sprintf("code %d", resp.Code)
 		}
-		return nil, fmt.Errorf("cqvip api: %s", msg)
+		return nil, 0, fmt.Errorf("cqvip api: %s", msg)
 	}
 
 	papers := make([]Paper, 0, len(resp.Data))
@@ -150,5 +154,5 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts 
 			Abstract: strings.TrimSpace(p.Abstract),
 		})
 	}
-	return papers, nil
+	return papers, len(resp.Data), nil
 }

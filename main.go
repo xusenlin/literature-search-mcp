@@ -21,8 +21,6 @@ type SingleSearchInput struct {
 type CQVIPSearchInput struct {
 	Query       string `json:"query" jsonschema:"keyword(s) to search"`
 	Limit       int    `json:"limit,omitempty" jsonschema:"max results to return (default 10)"`
-	YearStart   int    `json:"year_start,omitempty" jsonschema:"earliest publication year (inclusive); 0 = no lower bound"`
-	YearEnd     int    `json:"year_end,omitempty" jsonschema:"latest publication year (inclusive); 0 = no upper bound"`
 	OnlyPDF     bool   `json:"only_pdf,omitempty" jsonschema:"restrict to records that have a downloadable PDF"`
 	OnlyOA      bool   `json:"only_oa,omitempty" jsonschema:"restrict to open-access records"`
 	Language    string `json:"language,omitempty" jsonschema:"paper language filter, e.g. 'zh' or 'en'"`
@@ -48,14 +46,14 @@ func nonNil(ps []Paper) []Paper {
 
 func makePubMedHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
-		papers, err := SearchPubMed(ctx, cfg, in.Query, in.Limit)
+		papers, total, err := SearchPubMed(ctx, cfg, in.Query, in.Limit)
 		if err != nil {
 			return nil, SearchResult{}, err
 		}
 		papers = nonNil(papers)
 		return nil, SearchResult{
 			Query:  in.Query,
-			Total:  len(papers),
+			Total:  total,
 			Papers: papers,
 		}, nil
 	}
@@ -63,14 +61,14 @@ func makePubMedHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, S
 
 func makeSemanticScholarHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
-		papers, err := SearchSemanticScholar(ctx, cfg, in.Query, in.Limit)
+		papers, total, err := SearchSemanticScholar(ctx, cfg, in.Query, in.Limit)
 		if err != nil {
 			return nil, SearchResult{}, err
 		}
 		papers = nonNil(papers)
 		return nil, SearchResult{
 			Query:  in.Query,
-			Total:  len(papers),
+			Total:  total,
 			Papers: papers,
 		}, nil
 	}
@@ -78,14 +76,14 @@ func makeSemanticScholarHandler(cfg Config) func(context.Context, *mcp.CallToolR
 
 func makeArxivHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in SingleSearchInput) (*mcp.CallToolResult, SearchResult, error) {
-		papers, err := SearchArxiv(ctx, cfg, in.Query, in.Limit)
+		papers, total, err := SearchArxiv(ctx, cfg, in.Query, in.Limit)
 		if err != nil {
 			return nil, SearchResult{}, err
 		}
 		papers = nonNil(papers)
 		return nil, SearchResult{
 			Query:  in.Query,
-			Total:  len(papers),
+			Total:  total,
 			Papers: papers,
 		}, nil
 	}
@@ -93,9 +91,7 @@ func makeArxivHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, Si
 
 func makeCQVIPHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, CQVIPSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in CQVIPSearchInput) (*mcp.CallToolResult, SearchResult, error) {
-		papers, err := SearchCQVIP(ctx, cfg, in.Query, in.Limit, CQVIPOptions{
-			YearStart:   in.YearStart,
-			YearEnd:     in.YearEnd,
+		papers, total, err := SearchCQVIP(ctx, cfg, in.Query, in.Limit, CQVIPOptions{
 			OnlyPDF:     in.OnlyPDF,
 			OnlyOA:      in.OnlyOA,
 			Language:    in.Language,
@@ -107,7 +103,7 @@ func makeCQVIPHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, CQ
 		papers = nonNil(papers)
 		return nil, SearchResult{
 			Query:  in.Query,
-			Total:  len(papers),
+			Total:  total,
 			Papers: papers,
 		}, nil
 	}
@@ -119,7 +115,7 @@ func makeCQVIPHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, CQ
 func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	type backend struct {
 		name string
-		fn   func(context.Context, Config, string, int) ([]Paper, error)
+		fn   func(context.Context, Config, string, int) ([]Paper, int, error)
 	}
 	backends := []backend{
 		{"pubmed", SearchPubMed},
@@ -129,7 +125,7 @@ func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllS
 	if cfg.CQVIPAPIKey != "" {
 		backends = append(backends, backend{
 			name: "cqvip",
-			fn: func(ctx context.Context, c Config, q string, n int) ([]Paper, error) {
+			fn: func(ctx context.Context, c Config, q string, n int) ([]Paper, int, error) {
 				return SearchCQVIP(ctx, c, q, n, CQVIPOptions{})
 			},
 		})
@@ -138,15 +134,16 @@ func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllS
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in AllSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 		limit := in.LimitPerSource
 		if limit <= 0 {
-			limit = 5
+			limit = 10
 		}
 
 		var (
-			mu      sync.Mutex
-			papers  = []Paper{}
-			errs    []string
-			sources []string
-			wg      sync.WaitGroup
+			mu           sync.Mutex
+			papers       = []Paper{}
+			errs         []string
+			sources      []string
+			sourceTotals = make(map[string]int)
+			wg           sync.WaitGroup
 		)
 
 		for _, b := range backends {
@@ -154,7 +151,7 @@ func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllS
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ps, err := b.fn(ctx, cfg, in.Query, limit)
+				ps, total, err := b.fn(ctx, cfg, in.Query, limit)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -163,16 +160,18 @@ func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllS
 				}
 				papers = append(papers, ps...)
 				sources = append(sources, b.name)
+				sourceTotals[b.name] = total
 			}()
 		}
 		wg.Wait()
 
 		return nil, SearchResult{
-			Query:   in.Query,
-			Total:   len(papers),
-			Papers:  papers,
-			Errors:  errs,
-			Sources: sources,
+			Query:        in.Query,
+			Total:        len(papers),
+			Papers:       papers,
+			Errors:       errs,
+			Sources:      sources,
+			SourceTotals: sourceTotals,
 		}, nil
 	}
 }
@@ -192,27 +191,29 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "search_pubmed",
-		Description: "Search PubMed by keyword. Returns papers with title, authors, " +
-			"year, journal, DOI, URL, and abstract. Useful for biomedical literature.",
+		Description: "Search PubMed by keyword (restricted to last 5 years). Returns papers with title, " +
+			"authors, year, journal, DOI, URL, and abstract. Useful for biomedical literature.",
 	}, makePubMedHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "search_semantic_scholar",
-		Description: "Search Semantic Scholar by keyword. Covers all fields and " +
-			"returns title, authors, year, venue, DOI, URL, abstract, and citation count.",
+		Description: "Search Semantic Scholar by keyword (restricted to last 5 years). Covers all fields " +
+			"and returns title, authors, year, venue, DOI, URL, abstract, and citation count.",
 	}, makeSemanticScholarHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "search_arxiv",
-		Description: "Search arXiv by keyword. Returns title, authors, year, " +
+		Description: "Search arXiv by keyword (restricted to last 5 years). Returns title, authors, year, " +
 			"journal reference (if any), DOI, abstract page URL, PDF URL, and abstract. " +
 			"Useful for physics, math, and CS preprints.",
 	}, makeArxivHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "search_cqvip",
-		Description: "Search CQVIP (维普) Chinese academic database by keyword. " +
-			"Supports year range, open-access only, has-PDF only, and language filters. " +
+		Description: "Search CQVIP (维普) Chinese academic database by keyword " +
+			"(restricted to last 5 years, max 10 results per request). " +
+			"Note: the 'total' field reflects returned page size, NOT the full match count. " +
+			"Supports open-access only, has-PDF only, and language filters. " +
 			"Returns title, authors, year, journal, DOI, URL, and abstract. " +
 			"Requires CQVIP_API_KEY (paid service).",
 	}, makeCQVIPHandler(cfg))
@@ -220,9 +221,12 @@ func main() {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "search_all",
 		Description: "Search PubMed, Semantic Scholar, and arXiv (plus CQVIP if its " +
-			"key is configured) in parallel for the same query. Per-platform failures " +
+			"key is configured) in parallel for the same query " +
+			"(restricted to last 5 years). Per-platform failures " +
 			"are reported under `errors` and do not fail the call; results from " +
-			"successful platforms are merged.",
+			"successful platforms are merged. " +
+			"The `source_totals` field shows per-platform match counts; " +
+			"note that CQVIP's total may reflect only the current page size.",
 	}, makeAllHandler(cfg))
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {

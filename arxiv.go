@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const arxivQueryURL = "http://export.arxiv.org/api/query"
@@ -42,10 +44,12 @@ type arxivLink struct {
 
 // SearchArxiv runs a keyword search against arXiv's public Atom API.
 // arXiv requires no API key.
-func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Paper, error) {
+func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Paper, int, error) {
 	if limit <= 0 {
-		limit = 10
+		limit = 20
 	}
+
+	yearFrom := time.Now().Year() - 5
 
 	q := url.Values{}
 	q.Set("search_query", "all:"+query)
@@ -56,16 +60,36 @@ func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Pape
 
 	body, err := httpGet(ctx, arxivQueryURL+"?"+q.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("arxiv search: %w", err)
+		return nil, 0, fmt.Errorf("arxiv search: %w", err)
 	}
 
 	var feed arxivFeed
 	if err := xml.Unmarshal(body, &feed); err != nil {
-		return nil, fmt.Errorf("arxiv decode: %w", err)
+		return nil, 0, fmt.Errorf("arxiv decode: %w", err)
 	}
+
+	total := len(feed.Entries)
 
 	papers := make([]Paper, 0, len(feed.Entries))
 	for _, e := range feed.Entries {
+		// Year from the published date (RFC3339-ish: 2021-06-08T17:23:20Z).
+		year := ""
+		if len(e.Published) >= 4 {
+			year = e.Published[:4]
+		}
+
+		// Filter by year range (last 5 years).
+		if year == "" {
+			continue
+		}
+		y, err := strconv.Atoi(year)
+		if err != nil {
+			continue
+		}
+		if y < yearFrom {
+			continue
+		}
+
 		// Authors.
 		authors := make([]string, 0, len(e.Authors))
 		for _, a := range e.Authors {
@@ -93,12 +117,6 @@ func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Pape
 			id = htmlURL[i+len("/abs/"):]
 		}
 
-		// Year from the published date (RFC3339-ish: 2021-06-08T17:23:20Z).
-		year := ""
-		if len(e.Published) >= 4 {
-			year = e.Published[:4]
-		}
-
 		venue := strings.TrimSpace(e.JournalRef)
 		if venue == "" {
 			venue = "arXiv"
@@ -117,7 +135,7 @@ func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Pape
 			Abstract: cleanWhitespace(e.Summary),
 		})
 	}
-	return papers, nil
+	return papers, total, nil
 }
 
 // arXiv inserts newlines and indentation inside titles/abstracts. Collapse them.

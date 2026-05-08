@@ -18,9 +18,10 @@ type Paper struct {
 
 // SearchResult is what a single tool call returns.
 type SearchResult struct {
-	Query   string   `json:"query" jsonschema:"the keyword query that was executed"`
-	Total   int      `json:"total" jsonschema:"number of papers returned"`
-	Papers  []Paper  `json:"papers" jsonschema:"the matching papers"`
-	Errors  []string `json:"errors,omitempty" jsonschema:"non-fatal errors per platform (only set for search_all)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"platforms that successfully returned results (only for search_all)"`
+	Query        string         `json:"query" jsonschema:"the keyword query that was executed"`
+	Total        int            `json:"total" jsonschema:"total number of results returned"`
+	Papers       []Paper        `json:"papers" jsonschema:"the matching papers"`
+	Errors       []string       `json:"errors,omitempty" jsonschema:"non-fatal errors per platform (only set for search_all)"`
+	Sources      []string       `json:"sources,omitempty" jsonschema:"platforms that successfully returned results (only for search_all)"`
+	SourceTotals map[string]int `json:"source_totals,omitempty" jsonschema:"per-platform total match count (only for search_all)"`
 }

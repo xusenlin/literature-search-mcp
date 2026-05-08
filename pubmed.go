@@ -6,7 +6,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -19,6 +21,7 @@ const (
 
 type pubmedESearchResp struct {
 	ESearchResult struct {
+		Count  string   `json:"count"`
 		IDList []string `json:"idlist"`
 	} `json:"esearchresult"`
 }
@@ -34,7 +37,8 @@ type pubmedArticle struct {
 	MedlineCitation struct {
 		PMID    string `xml:"PMID"`
 		Article struct {
-			ArticleTitle string `xml:"ArticleTitle"`
+			ArticleTitle    string `xml:"ArticleTitle"`
+			VernacularTitle string `xml:"VernacularTitle"`
 			Abstract     struct {
 				Texts []pubmedAbstractText `xml:"AbstractText"`
 			} `xml:"Abstract"`
@@ -86,10 +90,12 @@ type pubmedArticleID struct {
 //  2. EFetch  (XML)  → full records including abstracts.
 //
 // The API key is optional; without one, NCBI rate-limits to 3 req/s.
-func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]Paper, error) {
+func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]Paper, int, error) {
 	if limit <= 0 {
-		limit = 10
+		limit = 20
 	}
+
+	yearFrom := time.Now().Year() - 5
 
 	// 1) ESearch — find PMIDs.
 	q := url.Values{}
@@ -98,6 +104,9 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 	q.Set("retmode", "json")
 	q.Set("retmax", fmt.Sprintf("%d", limit))
 	q.Set("sort", "relevance")
+	q.Set("mindate", fmt.Sprintf("%d", yearFrom))
+	q.Set("maxdate", fmt.Sprintf("%d", time.Now().Year()))
+	q.Set("datetype", "pdat")
 	if cfg.Tool != "" {
 		q.Set("tool", cfg.Tool)
 	}
@@ -110,16 +119,18 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 
 	body, err := httpGet(ctx, pubmedESearchURL+"?"+q.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("pubmed esearch: %w", err)
+		return nil, 0, fmt.Errorf("pubmed esearch: %w", err)
 	}
 
 	var sr pubmedESearchResp
 	if err := json.Unmarshal(body, &sr); err != nil {
-		return nil, fmt.Errorf("pubmed esearch decode: %w", err)
+		return nil, 0, fmt.Errorf("pubmed esearch decode: %w", err)
 	}
 	if len(sr.ESearchResult.IDList) == 0 {
-		return []Paper{}, nil
+		return []Paper{}, 0, nil
 	}
+
+	total, _ := strconv.Atoi(sr.ESearchResult.Count)
 
 	// 2) EFetch — full records.
 	fq := url.Values{}
@@ -138,12 +149,12 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 
 	xmlBody, err := httpGet(ctx, pubmedEFetchURL+"?"+fq.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("pubmed efetch: %w", err)
+		return nil, 0, fmt.Errorf("pubmed efetch: %w", err)
 	}
 
 	var set pubmedArticleSet
 	if err := xml.Unmarshal(xmlBody, &set); err != nil {
-		return nil, fmt.Errorf("pubmed efetch decode: %w", err)
+		return nil, 0, fmt.Errorf("pubmed efetch decode: %w", err)
 	}
 
 	papers := make([]Paper, 0, len(set.Articles))
@@ -203,10 +214,19 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 			}
 		}
 
+		// Title — prefer ArticleTitle, fall back to VernacularTitle.
+		title := strings.TrimSpace(art.ArticleTitle)
+		if title == "" || title == "[Not Available]." {
+			title = strings.TrimSpace(art.VernacularTitle)
+		}
+		if title == "" || title == "[Not Available]." {
+			continue
+		}
+
 		papers = append(papers, Paper{
 			Source:   "pubmed",
 			ID:       mc.PMID,
-			Title:    strings.TrimSpace(art.ArticleTitle),
+			Title:    title,
 			Authors:  authors,
 			Year:     year,
 			Venue:    strings.TrimSpace(art.Journal.Title),
@@ -215,5 +235,5 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 			Abstract: strings.TrimSpace(ab.String()),
 		})
 	}
-	return papers, nil
+	return papers, total, nil
 }

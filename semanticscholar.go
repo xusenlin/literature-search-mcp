@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"time"
 )
 
 const semanticScholarSearchURL = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -34,18 +35,21 @@ type ssAuthor struct {
 // SearchSemanticScholar runs a keyword search against the Semantic Scholar
 // graph API. The API key is optional; without one the public rate limit
 // applies (currently 1 req/s globally).
-func SearchSemanticScholar(ctx context.Context, cfg Config, query string, limit int) ([]Paper, error) {
+func SearchSemanticScholar(ctx context.Context, cfg Config, query string, limit int) ([]Paper, int, error) {
 	if limit <= 0 {
-		limit = 10
+		limit = 20
 	}
 	if limit > 100 {
 		limit = 100 // S2 hard cap on a single page.
 	}
 
+	yearFrom := time.Now().Year() - 5
+
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("fields", "title,abstract,year,venue,url,citationCount,authors,externalIds")
+	q.Set("year", fmt.Sprintf("%d-", yearFrom))
 
 	headers := map[string]string{}
 	if cfg.SemanticScholarAPIKey != "" {
@@ -54,12 +58,12 @@ func SearchSemanticScholar(ctx context.Context, cfg Config, query string, limit 
 
 	body, err := httpGet(ctx, semanticScholarSearchURL+"?"+q.Encode(), headers)
 	if err != nil {
-		return nil, fmt.Errorf("semantic scholar search: %w", err)
+		return nil, 0, fmt.Errorf("semantic scholar search: %w", err)
 	}
 
 	var sr ssSearchResp
 	if err := json.Unmarshal(body, &sr); err != nil {
-		return nil, fmt.Errorf("semantic scholar decode: %w", err)
+		return nil, 0, fmt.Errorf("semantic scholar decode: %w", err)
 	}
 
 	papers := make([]Paper, 0, len(sr.Data))
@@ -102,5 +106,5 @@ func SearchSemanticScholar(ctx context.Context, cfg Config, query string, limit 
 			CitationCount: p.CitationCount,
 		})
 	}
-	return papers, nil
+	return papers, sr.Total, nil
 }
