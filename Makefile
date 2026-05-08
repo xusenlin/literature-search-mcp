@@ -8,6 +8,9 @@ export
 build:
 	go build -o $(BINARY) .
 
+build-s:
+	GOOS=linux GOARCH=amd64 go build -o $(BINARY) .
+
 dev: build
 	npx @modelcontextprotocol/inspector ./$(BINARY)
 
