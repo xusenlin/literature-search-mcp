@@ -17,14 +17,9 @@ type SingleSearchInput struct {
 	Limit int    `json:"limit,omitempty" jsonschema:"max results to return (default 10)"`
 }
 
-// CQVIPSearchInput exposes the extra filters the CQVIP advanced API supports.
 type CQVIPSearchInput struct {
-	Query       string `json:"query" jsonschema:"keyword(s) to search"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"max results to return (default 10)"`
-	OnlyPDF     bool   `json:"only_pdf,omitempty" jsonschema:"restrict to records that have a downloadable PDF"`
-	OnlyOA      bool   `json:"only_oa,omitempty" jsonschema:"restrict to open-access records"`
-	Language    string `json:"language,omitempty" jsonschema:"paper language filter, e.g. 'zh' or 'en'"`
-	SearchField string `json:"search_field,omitempty" jsonschema:"CQVIP search-field code; defaults to 'U' (all fields)"`
+	Query    string `json:"query" jsonschema:"keyword(s) to search"`
+	Language string `json:"language,omitempty" jsonschema:"paper language filter, e.g. 'zh' or 'en'"`
 }
 
 type AllSearchInput struct {
@@ -91,12 +86,7 @@ func makeArxivHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, Si
 
 func makeCQVIPHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, CQVIPSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in CQVIPSearchInput) (*mcp.CallToolResult, SearchResult, error) {
-		papers, total, err := SearchCQVIP(ctx, cfg, in.Query, in.Limit, CQVIPOptions{
-			OnlyPDF:     in.OnlyPDF,
-			OnlyOA:      in.OnlyOA,
-			Language:    in.Language,
-			SearchField: in.SearchField,
-		})
+		papers, total, err := SearchCQVIP(ctx, cfg, in.Query, in.Language)
 		if err != nil {
 			return nil, SearchResult{}, err
 		}
@@ -110,8 +100,8 @@ func makeCQVIPHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, CQ
 }
 
 // makeAllHandler runs every backend in parallel. A failing backend does not
-// fail the whole call — it's recorded under `errors` and we move on. CQVIP
-// is only included if its API key is configured (it has no free tier).
+// fail the whole call — it's recorded under `errors` and we move on. CQVIP is
+// intentionally excluded because it is charged per call.
 func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllSearchInput) (*mcp.CallToolResult, SearchResult, error) {
 	type backend struct {
 		name string
@@ -121,14 +111,6 @@ func makeAllHandler(cfg Config) func(context.Context, *mcp.CallToolRequest, AllS
 		{"pubmed", SearchPubMed},
 		{"semantic_scholar", SearchSemanticScholar},
 		{"arxiv", SearchArxiv},
-	}
-	if cfg.CQVIPAPIKey != "" {
-		backends = append(backends, backend{
-			name: "cqvip",
-			fn: func(ctx context.Context, c Config, q string, n int) ([]Paper, int, error) {
-				return SearchCQVIP(ctx, c, q, n, CQVIPOptions{})
-			},
-		})
 	}
 
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in AllSearchInput) (*mcp.CallToolResult, SearchResult, error) {
@@ -190,43 +172,28 @@ func main() {
 	}, nil)
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "search_pubmed",
-		Description: "Search PubMed by keyword (restricted to last 5 years). Returns papers with title, " +
-			"authors, year, journal, DOI, URL, and abstract. Useful for biomedical literature.",
+		Name:        "search_pubmed",
+		Description: "搜索最近 5 年 PubMed 生物医学文献。适合医学、生命科学、临床相关问题。输入 query 和 limit。",
 	}, makePubMedHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "search_semantic_scholar",
-		Description: "Search Semantic Scholar by keyword (restricted to last 5 years). Covers all fields " +
-			"and returns title, authors, year, venue, DOI, URL, abstract, and citation count.",
+		Name:        "search_semantic_scholar",
+		Description: "搜索最近 5 年 Semantic Scholar 多学科文献。适合通用学术检索，并返回引用次数。输入 query 和 limit。",
 	}, makeSemanticScholarHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "search_arxiv",
-		Description: "Search arXiv by keyword (restricted to last 5 years). Returns title, authors, year, " +
-			"journal reference (if any), DOI, abstract page URL, PDF URL, and abstract. " +
-			"Useful for physics, math, and CS preprints.",
+		Name:        "search_arxiv",
+		Description: "搜索最近 5 年 arXiv 预印本文献。适合计算机、数学、物理等领域，并返回 PDF 链接。输入 query 和 limit。",
 	}, makeArxivHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "search_cqvip",
-		Description: "Search CQVIP (维普) Chinese academic database by keyword " +
-			"(restricted to last 5 years, max 10 results per request). " +
-			"Note: the 'total' field reflects returned page size, NOT the full match count. " +
-			"Supports open-access only, has-PDF only, and language filters. " +
-			"Returns title, authors, year, journal, DOI, URL, and abstract. " +
-			"Requires CQVIP_API_KEY (paid service).",
+		Name:        "search_cqvip",
+		Description: "搜索最近 5 年 CQVIP（维普）中文文献。按调用次数收费，每次固定请求 50 条；不要试探性或重复调用。应先使用免费综合检索，不足时再用本工具补充。输入 query，可选 language。",
 	}, makeCQVIPHandler(cfg))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "search_all",
-		Description: "Search PubMed, Semantic Scholar, and arXiv (plus CQVIP if its " +
-			"key is configured) in parallel for the same query " +
-			"(restricted to last 5 years). Per-platform failures " +
-			"are reported under `errors` and do not fail the call; results from " +
-			"successful platforms are merged. " +
-			"The `source_totals` field shows per-platform match counts; " +
-			"note that CQVIP's total may reflect only the current page size.",
+		Name:        "search_all",
+		Description: "并行搜索最近 5 年 PubMed、Semantic Scholar 和 arXiv。适合先做免费综合检索。不会调用 CQVIP；需要维普时必须单独调用 search_cqvip。输入 query 和 limit_per_source。",
 	}, makeAllHandler(cfg))
 
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {

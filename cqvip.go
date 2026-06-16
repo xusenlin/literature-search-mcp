@@ -10,18 +10,10 @@ import (
 )
 
 const (
-	cqvipAdvSearchURL = "https://superapi.cqvip.com/unifiedsearch/search/v1/paper/adv-search"
+	cqvipAdvSearchURL = "https://superapi.cqvip.com/unifiedsearch/search/v1/paper/adv-search-jkhh"
 	cqvipArticleURL   = "https://qikan.cqvip.com/Qikan/Article/Detail?id=" // canonical CQVIP detail page
+	cqvipPageSize     = 50
 )
-
-// CQVIPOptions captures the optional filters supported by the advanced
-// search endpoint. Zero values mean "do not constrain".
-type CQVIPOptions struct {
-	OnlyPDF     bool   // restrict to records with PDF
-	OnlyOA      bool   // restrict to open-access records
-	Language    string // "zh" / "en"
-	SearchField string // CQVIP field code; defaults to "U" (universal)
-}
 
 // --- request body ---
 
@@ -32,8 +24,6 @@ type cqvipReq struct {
 	Content     string `json:"content"`
 	YearStart   int    `json:"yearStart,omitempty"`
 	YearEnd     int    `json:"yearEnd,omitempty"`
-	PDF         bool   `json:"pdf,omitempty"`
-	IsOa        bool   `json:"isOa,omitempty"`
 	Language    string `json:"language,omitempty"`
 }
 
@@ -46,20 +36,13 @@ type cqvipResp struct {
 }
 
 type cqvipPaper struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Abstract    string         `json:"abstr"`
-	DOI         string         `json:"doi"`
-	Year        string         `json:"year"`
-	BeginPage   string         `json:"beginPage"`
-	EndPage     string         `json:"endPage"`
-	IsOa        bool           `json:"isOa"`
-	IsPDF       int            `json:"isPdf"`
-	Language    string         `json:"paperLanguage"`
-	AuthorInfo  []cqvipNamed   `json:"authorInfo"`
-	OrganInfo   []cqvipNamed   `json:"organInfo"`
-	KeywordInfo []cqvipNamed   `json:"keywordInfo"`
-	Journal     cqvipJournal   `json:"journalInfo"`
+	ID         string       `json:"id"`
+	Title      string       `json:"title"`
+	Abstract   string       `json:"abstr"`
+	DOI        string       `json:"doi"`
+	Year       string       `json:"year"`
+	AuthorInfo []cqvipNamed `json:"authorInfo"`
+	Journal    cqvipJournal `json:"journalInfo"`
 }
 
 type cqvipNamed struct {
@@ -75,34 +58,21 @@ type cqvipJournal struct {
 
 // SearchCQVIP runs an advanced search against the CQVIP (维普) academic API.
 // An API key is REQUIRED — the endpoint always returns 401 without one.
-func SearchCQVIP(ctx context.Context, cfg Config, query string, limit int, opts CQVIPOptions) ([]Paper, int, error) {
+func SearchCQVIP(ctx context.Context, cfg Config, query string, language string) ([]Paper, int, error) {
 	if cfg.CQVIPAPIKey == "" {
 		return nil, 0, errors.New("CQVIP_API_KEY is not set")
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > 10 {
-		limit = 10
 	}
 
 	yearFrom := time.Now().Year() - 5
 
-	field := opts.SearchField
-	if field == "" {
-		field = "U"
-	}
-
 	body := cqvipReq{
 		Page:        1,
-		Size:        limit,
-		SearchField: field,
+		Size:        cqvipPageSize,
+		SearchField: "U",
 		Content:     query,
 		YearStart:   yearFrom,
 		YearEnd:     time.Now().Year(),
-		PDF:         opts.OnlyPDF,
-		IsOa:        opts.OnlyOA,
-		Language:    opts.Language,
+		Language:    language,
 	}
 
 	headers := map[string]string{
