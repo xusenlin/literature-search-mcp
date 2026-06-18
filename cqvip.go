@@ -25,6 +25,7 @@ type cqvipReq struct {
 	YearStart   int    `json:"yearStart,omitempty"`
 	YearEnd     int    `json:"yearEnd,omitempty"`
 	Language    string `json:"language,omitempty"`
+	PDF         bool   `json:"pdf,omitempty"`
 }
 
 // --- response shape ---
@@ -41,6 +42,7 @@ type cqvipPaper struct {
 	Abstract   string       `json:"abstr"`
 	DOI        string       `json:"doi"`
 	Year       string       `json:"year"`
+	IsPDF      int          `json:"isPdf"`
 	AuthorInfo []cqvipNamed `json:"authorInfo"`
 	Journal    cqvipJournal `json:"journalInfo"`
 }
@@ -73,6 +75,7 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, language string)
 		YearStart:   yearFrom,
 		YearEnd:     time.Now().Year(),
 		Language:    language,
+		PDF:         true,
 	}
 
 	headers := map[string]string{
@@ -98,31 +101,106 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, language string)
 
 	papers := make([]Paper, 0, len(resp.Data))
 	for _, p := range resp.Data {
-		// Authors.
-		authors := make([]string, 0, len(p.AuthorInfo))
-		for _, a := range p.AuthorInfo {
-			if a.Name != "" {
-				authors = append(authors, a.Name)
-			}
+		if p.IsPDF != 1 {
+			continue
 		}
-
-		// Year — prefer the string field, fall back to journalInfo.year.
-		year := strings.TrimSpace(p.Year)
-		if year == "" && p.Journal.Year > 0 {
-			year = fmt.Sprintf("%d", p.Journal.Year)
-		}
-
-		papers = append(papers, Paper{
-			Source:   "cqvip",
-			ID:       p.ID,
-			Title:    strings.TrimSpace(p.Title),
-			Authors:  authors,
-			Year:     year,
-			Venue:    strings.TrimSpace(p.Journal.Name),
-			DOI:      strings.TrimSpace(p.DOI),
-			URL:      cqvipArticleURL + p.ID,
-			Abstract: strings.TrimSpace(p.Abstract),
-		})
+		papers = append(papers, cqvipPaperToPaper(p))
 	}
-	return papers, len(resp.Data), nil
+	return papers, len(papers), nil
+}
+
+// cqvipPaperToPaper converts one CQVIP search record into the unified Paper
+// shape.
+func cqvipPaperToPaper(p cqvipPaper) Paper {
+	authors := make([]string, 0, len(p.AuthorInfo))
+	for _, a := range p.AuthorInfo {
+		if a.Name != "" {
+			authors = append(authors, a.Name)
+		}
+	}
+
+	// Year — prefer the string field, fall back to journalInfo.year.
+	year := strings.TrimSpace(p.Year)
+	if year == "" && p.Journal.Year > 0 {
+		year = fmt.Sprintf("%d", p.Journal.Year)
+	}
+
+	return Paper{
+		Source:   "cqvip",
+		ID:       p.ID,
+		Title:    strings.TrimSpace(p.Title),
+		Authors:  authors,
+		Year:     year,
+		Venue:    strings.TrimSpace(p.Journal.Name),
+		DOI:      strings.TrimSpace(p.DOI),
+		URL:      cqvipArticleURL + p.ID,
+		Abstract: strings.TrimSpace(p.Abstract),
+	}
+}
+
+const cqvipDownloadURL = "https://superapi.cqvip.com/unifiedsearch/search/v1/paper-download"
+
+type cqvipDownloadResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    string `json:"data"`
+}
+
+// GetCQVIPDetail fetches CQVIP content by id using only the paid download
+// endpoint. It intentionally does not call paper-detail: the detail tool's
+// primary job is to retrieve readable paper content, and every extra CQVIP API
+// call can add cost.
+func GetCQVIPDetail(ctx context.Context, cfg Config, id string) (Paper, error) {
+	if cfg.CQVIPAPIKey == "" {
+		return Paper{}, errors.New("CQVIP_API_KEY is not set")
+	}
+
+	headers := map[string]string{
+		"Authorization": "Bearer " + cfg.CQVIPAPIKey,
+	}
+
+	p := Paper{
+		Source: "cqvip",
+		ID:     id,
+		URL:    cqvipArticleURL + id,
+	}
+	pdfURL, err := getCQVIPDownloadURL(ctx, headers, id)
+	if err != nil {
+		setFullTextError(&p, "cqvip paper download failed: %v", err)
+		return p, nil
+	}
+	p.PDFURL = pdfURL
+
+	fullText, err := extractPDFTextFromURL(ctx, pdfURL, nil)
+	if err != nil {
+		setFullTextError(&p, "cqvip pdf extraction failed: %v", err)
+		return p, nil
+	}
+	applyFullText(&p, fullText)
+	return p, nil
+}
+
+func getCQVIPDownloadURL(ctx context.Context, headers map[string]string, id string) (string, error) {
+	raw, err := httpPostJSON(ctx, cqvipDownloadURL, struct {
+		ID string `json:"id"`
+	}{ID: id}, headers)
+	if err != nil {
+		return "", err
+	}
+
+	var resp cqvipDownloadResp
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	if resp.Code != 200 {
+		msg := resp.Message
+		if msg == "" {
+			msg = fmt.Sprintf("code %d", resp.Code)
+		}
+		return "", fmt.Errorf("cqvip api: %s", msg)
+	}
+	if strings.TrimSpace(resp.Data) == "" {
+		return "", fmt.Errorf("empty download url; ensure the id is a CQVIP journal article id from an isPdf=1 search result")
+	}
+	return strings.TrimSpace(resp.Data), nil
 }

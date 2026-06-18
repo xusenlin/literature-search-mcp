@@ -11,11 +11,12 @@ Built with the official Go SDK: `github.com/modelcontextprotocol/go-sdk/mcp`.
 
 | Tool | Description |
 |---|---|
-| `search_pubmed` | Search PubMed by keyword. Uses ESearch + EFetch, so abstracts are included. |
-| `search_semantic_scholar` | Search Semantic Scholar (all fields). Returns citation counts. |
-| `search_arxiv` | Search arXiv (preprints in physics, math, CS, …). Returns PDF link. |
-| `search_cqvip` | Search CQVIP 维普 literature by keyword. Paid per call; use explicitly only when CQVIP Chinese literature is needed. Searches the last 5 years with a fixed page size of 50 and supports language filtering. |
-| `search_all` | Run PubMed, Semantic Scholar, and arXiv in parallel for the same query. **Per-platform failures are non-fatal** — successful platforms still contribute their results, failures are reported under `errors`. CQVIP is intentionally excluded because it is paid per call. |
+| `search_pubmed` | Search PubMed records with retrievable full text. Returns metadata, abstract, and PMID. |
+| `search_semantic_scholar` | Search Semantic Scholar records with open PDF. Returns metadata, abstract, citations, and paperId. |
+| `search_arxiv` | Search arXiv records with PDF. Returns metadata, abstract, arXiv id, and PDF link. |
+| `search_cqvip` | Search CQVIP 维普 downloadable journal articles by keyword. Paid per call; use explicitly only when CQVIP Chinese literature is needed. Returns CQVIP 期刊文献id values. |
+| `search_all` | Run PubMed, Semantic Scholar, and arXiv in parallel. Returns only records with retrievable full text or PDF. CQVIP is excluded because it is paid per call. |
+| `get_paper_detail` | Fetch paper body text by `source` + `id`. Returns `content` and `msg`. |
 
 ### Input schema
 
@@ -25,11 +26,12 @@ Single-platform tools (PubMed, S2, arXiv) take:
 { "query": "string",  "limit": 10 }
 ```
 
-All search tools automatically restrict results to the most recent 5 years. They
-do not expose year range parameters.
+All search tools automatically restrict results to the most recent 5 years and
+return only records that should support detail content retrieval.
 
-`search_cqvip` is a paid per-call backend and always requests 50 records from
-CQVIP. It supports an optional language filter:
+`search_cqvip` is a paid per-call backend and always requests 50 downloadable
+records from CQVIP. Its `id` field is the CQVIP 期刊文献id used by
+`get_paper_detail`. It supports an optional language filter:
 
 ```json
 {
@@ -47,6 +49,15 @@ CQVIP. It supports an optional language filter:
 `search_all` covers PubMed, Semantic Scholar, and arXiv only. It never calls
 CQVIP; use `search_cqvip` explicitly when paid CQVIP coverage is required.
 
+`get_paper_detail` takes:
+
+```json
+{
+  "source": "pubmed | semantic_scholar | arxiv | cqvip",
+  "id": "platform-native id from a search result"
+}
+```
+
 ### Output shape
 
 ```json
@@ -58,7 +69,7 @@ CQVIP; use `search_cqvip` explicitly when paid CQVIP coverage is required.
   "papers": [
     {
       "source":         "pubmed | semantic_scholar | arxiv | cqvip",
-      "id":             "PMID / S2 paperId / arXiv id / CQVIP id",
+      "id":             "PMID / S2 paperId / arXiv id / CQVIP 期刊文献id",
       "title":          "...",
       "authors":        ["..."],
       "year":           "2024",
@@ -70,6 +81,15 @@ CQVIP; use `search_cqvip` explicitly when paid CQVIP coverage is required.
       "citation_count": 42                              // Semantic Scholar only
     }
   ]
+}
+```
+
+`get_paper_detail` returns:
+
+```json
+{
+  "content": "paper body text when available",
+  "msg": "OK, or the reason content could not be returned"
 }
 ```
 
@@ -126,6 +146,7 @@ literature-mcp/
 ├── types.go            // Paper / SearchResult types (drive the schemas)
 ├── config.go           // env-var loading
 ├── http.go             // shared HTTP client (GET + POST JSON helpers)
+├── fulltext.go         // PDF/PMC full-text extraction helpers
 ├── pubmed.go           // ESearch + EFetch (XML)
 ├── semanticscholar.go  // graph/v1/paper/search (JSON)
 ├── arxiv.go            // export.arxiv.org/api/query (Atom XML)

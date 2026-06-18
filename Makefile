@@ -1,4 +1,4 @@
-BINARY := literature-mcp
+BINARY := literature-mcp-new
 
 -include .env
 export
