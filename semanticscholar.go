@@ -54,7 +54,7 @@ func SearchSemanticScholar(ctx context.Context, cfg Config, query string, limit 
 		fetchLimit = 100 // S2 hard cap on a single page.
 	}
 
-	yearFrom := time.Now().Year() - 5
+	yearFrom, _ := recentPublicationYearRange(time.Now())
 
 	q := url.Values{}
 	q.Set("query", query)

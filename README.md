@@ -26,8 +26,8 @@ Single-platform tools (PubMed, S2, arXiv) take:
 { "query": "string",  "limit": 10 }
 ```
 
-All search tools automatically restrict results to the most recent 5 years and
-return only records that should support detail content retrieval.
+All search tools automatically restrict results to the most recent 6 calendar
+years and return only records that should support detail content retrieval.
 
 `search_cqvip` is a paid per-call backend and always requests 50 downloadable
 records from CQVIP. Its `id` field is the CQVIP 期刊文献id used by

@@ -49,7 +49,7 @@ func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Pape
 		limit = 20
 	}
 
-	yearFrom := time.Now().Year() - 5
+	yearFrom, _ := recentPublicationYearRange(time.Now())
 
 	q := url.Values{}
 	q.Set("search_query", "all:"+query)
@@ -76,7 +76,7 @@ func SearchArxiv(ctx context.Context, _ Config, query string, limit int) ([]Pape
 			year = e.Published[:4]
 		}
 
-		// Filter by year range (last 5 years).
+		// Filter by the shared recent-publication year range.
 		if year == "" {
 			continue
 		}

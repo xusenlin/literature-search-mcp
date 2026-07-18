@@ -65,7 +65,7 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, language string)
 		return nil, 0, errors.New("CQVIP_API_KEY is not set")
 	}
 
-	yearFrom := time.Now().Year() - 5
+	yearFrom, yearTo := recentPublicationYearRange(time.Now())
 
 	body := cqvipReq{
 		Page:        1,
@@ -73,7 +73,7 @@ func SearchCQVIP(ctx context.Context, cfg Config, query string, language string)
 		SearchField: "U",
 		Content:     query,
 		YearStart:   yearFrom,
-		YearEnd:     time.Now().Year(),
+		YearEnd:     yearTo,
 		Language:    language,
 		PDF:         true,
 	}

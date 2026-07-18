@@ -13,7 +13,6 @@ import (
 const (
 	pubmedESearchURL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 	pubmedEFetchURL  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-	pubmedELinkURL   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
 	pubmedArticleURL = "https://pubmed.ncbi.nlm.nih.gov/"
 	pmcArticleURL    = "https://pmc.ncbi.nlm.nih.gov/articles/"
 )
@@ -84,21 +83,11 @@ type pubmedArticleID struct {
 	Value string `xml:",chardata"`
 }
 
-type pubmedELinkResp struct {
-	LinkSets []struct {
-		LinkSetDBs []struct {
-			DBTo     string   `json:"dbto"`
-			LinkName string   `json:"linkname"`
-			Links    []string `json:"links"`
-		} `json:"linksetdbs"`
-	} `json:"linksets"`
-}
-
 // SearchPubMed runs a keyword search against PubMed.
 //
 // Workflow:
 //  1. ESearch (JSON) → list of PMIDs.
-//  2. EFetch  (XML)  → full records including abstracts.
+//  2. EFetch  (XML)  → full records including abstracts and direct PMC ids.
 //
 // The API key is optional; without one, NCBI rate-limits to 3 req/s.
 func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]Paper, int, error) {
@@ -114,7 +103,7 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 		fetchLimit = 100
 	}
 
-	yearFrom := time.Now().Year() - 5
+	yearFrom, yearTo := recentPublicationYearRange(time.Now())
 
 	// 1) ESearch — find PMIDs.
 	q := url.Values{}
@@ -124,7 +113,7 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 	q.Set("retmax", fmt.Sprintf("%d", fetchLimit))
 	q.Set("sort", "relevance")
 	q.Set("mindate", fmt.Sprintf("%d", yearFrom))
-	q.Set("maxdate", fmt.Sprintf("%d", time.Now().Year()))
+	q.Set("maxdate", fmt.Sprintf("%d", yearTo))
 	q.Set("datetype", "pdat")
 	if cfg.Tool != "" {
 		q.Set("tool", cfg.Tool)
@@ -180,8 +169,7 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 		if !ok {
 			continue
 		}
-		pmcid, err := findPubMedPMCLink(ctx, cfg, p.ID)
-		if err != nil || pmcid == "" {
+		if pubmedArticlePMCID(a) == "" {
 			continue
 		}
 		papers = append(papers, p)
@@ -190,6 +178,27 @@ func SearchPubMed(ctx context.Context, cfg Config, query string, limit int) ([]P
 		}
 	}
 	return papers, len(papers), nil
+}
+
+// pubmedArticlePMCID returns the article's own PMC identifier from the
+// top-level PubmedData/ArticleIdList populated by EFetch. Reading it here
+// avoids a slow ELink request per search result and cannot confuse cited PMC
+// records with the article itself.
+func pubmedArticlePMCID(a pubmedArticle) string {
+	for _, id := range a.PubmedData.ArticleIDList.ArticleIDs {
+		if !strings.EqualFold(id.Type, "pmc") {
+			continue
+		}
+		pmcid := strings.ToUpper(strings.TrimSpace(id.Value))
+		if pmcid == "" {
+			continue
+		}
+		if strings.HasPrefix(pmcid, "PMC") {
+			return pmcid
+		}
+		return "PMC" + pmcid
+	}
+	return ""
 }
 
 // pubmedArticleToPaper converts one EFetch article into the unified Paper shape.
@@ -306,11 +315,7 @@ func GetPubMedDetail(ctx context.Context, cfg Config, pmid string) (Paper, error
 	if !ok {
 		return Paper{}, fmt.Errorf("paper not found: pubmed %s", pmid)
 	}
-	pmcid, err := findPubMedPMCLink(ctx, cfg, pmid)
-	if err != nil {
-		setFullTextError(&p, "pubmed pmc lookup failed: %v", err)
-		return p, nil
-	}
+	pmcid := pubmedArticlePMCID(set.Articles[0])
 	if pmcid == "" {
 		setFullTextError(&p, "no full text content available")
 		return p, nil
@@ -325,50 +330,6 @@ func GetPubMedDetail(ctx context.Context, cfg Config, pmid string) (Paper, error
 	applyFullText(&p, fullText)
 	return p, nil
 }
-
-func findPubMedPMCLink(ctx context.Context, cfg Config, pmid string) (string, error) {
-	q := url.Values{}
-	q.Set("dbfrom", "pubmed")
-	q.Set("db", "pmc")
-	q.Set("id", pmid)
-	q.Set("retmode", "json")
-	if cfg.Tool != "" {
-		q.Set("tool", cfg.Tool)
-	}
-	if cfg.Contact != "" {
-		q.Set("email", cfg.Contact)
-	}
-	if cfg.PubMedAPIKey != "" {
-		q.Set("api_key", cfg.PubMedAPIKey)
-	}
-
-	body, err := httpGet(ctx, pubmedELinkURL+"?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-
-	var resp pubmedELinkResp
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", err
-	}
-	for _, set := range resp.LinkSets {
-		for _, db := range set.LinkSetDBs {
-			if !strings.EqualFold(db.DBTo, "pmc") || len(db.Links) == 0 {
-				continue
-			}
-			id := strings.TrimSpace(db.Links[0])
-			if id == "" {
-				continue
-			}
-			if strings.HasPrefix(strings.ToUpper(id), "PMC") {
-				return strings.ToUpper(id), nil
-			}
-			return "PMC" + id, nil
-		}
-	}
-	return "", nil
-}
-
 func fetchPMCFullText(ctx context.Context, cfg Config, pmcid string) (fullTextResult, error) {
 	q := url.Values{}
 	q.Set("db", "pmc")
